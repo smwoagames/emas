@@ -48,6 +48,12 @@ h1 span{color:var(--muted);font-weight:600}
 .btn[aria-pressed="true"]{border-color:var(--key);color:var(--key)}
 button:focus-visible,input:focus-visible{outline:2px solid var(--key);outline-offset:2px}
 .off{display:inline-flex;align-items:center;gap:6px;font-size:.75rem;color:var(--muted)}
+.dc{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:12px 14px;display:grid;gap:8px}
+.dc label{font:600 .66rem var(--f-num);letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
+.dc-row{display:flex;flex-wrap:wrap;gap:8px}
+.dc-row input{flex:1 1 260px;min-width:0;font:500 .8rem var(--f-num);background:var(--strip);color:var(--fg);border:1px solid var(--line);border-radius:8px;padding:8px 10px}
+.dc-note{color:var(--muted);font-size:.76rem}
+.dc-note.ok{color:var(--bull)} .dc-note.bad{color:var(--bear)}
 .off input{width:92px;font:500 .8rem var(--f-num);background:var(--strip);color:var(--fg);border:1px solid var(--line);border-radius:8px;padding:7px 8px}
 .chartbox{position:relative;background:var(--panel);border:1px solid var(--line);border-radius:14px;overflow:hidden}
 #chart{min-height:320px;display:grid}
@@ -108,7 +114,14 @@ details p{margin:6px 0;max-width:70ch}
     <div class="seg" role="group" aria-label="Kepekaan"><button id="sn-n" data-sn="biasa" aria-pressed="true">Biasa</button><button id="sn-k" data-sn="ketat" aria-pressed="false">Ketat</button></div>
     <div class="seg" role="group" aria-label="Zum"><button id="zm-out" aria-label="Lebih banyak bar">−</button><button id="zm-in" aria-label="Kurang bar">+</button></div>
     <button class="btn" id="snd" aria-pressed="false">🔔 Bunyi amaran</button>
+    <button class="btn" id="dc-btn" aria-pressed="false" aria-expanded="false" aria-controls="dc-box">💬 Discord</button>
     <label class="off" for="bid">Bid MT5 <input id="bid" inputmode="decimal" placeholder="cth 4195.20"></label>
+  </div>
+
+  <div class="dc" id="dc-box" hidden>
+    <label for="dc-url">Link webhook Discord</label>
+    <div class="dc-row"><input id="dc-url" type="password" autocomplete="off" placeholder="https://discord.com/api/webhooks/…"><button class="btn" id="dc-save">Simpan</button><button class="btn" id="dc-test">Hantar ujian</button><button class="btn" id="dc-off">Padam</button></div>
+    <div class="dc-note" id="dc-note">Bila disimpan, setiap notifikasi dalam app (absorption, dinding bertahan / diisi semula / dimakan, anak panah BUY/SELL) juga dihantar ke Discord. Hanya berfungsi semasa app terbuka. Link disimpan dalam pelayar ini sahaja.</div>
   </div>
 
   <div class="chartbox"><div id="chart"><div class="wait">Memuatkan candle live…</div></div><div class="tip" id="tip" hidden></div></div>
@@ -574,7 +587,38 @@ details p{margin:6px 0;max-width:70ch}
   function beep(up){ if (!sound) return; try { actx = actx || new (window.AudioContext || window.webkitAudioContext)(); const o = actx.createOscillator(), g = actx.createGain();
     o.frequency.value = up ? 520 : 880; o.connect(g); g.connect(actx.destination); g.gain.setValueAtTime(.12, actx.currentTime); g.gain.exponentialRampToValueAtTime(.001, actx.currentTime + .5); o.start(); o.stop(actx.currentTime + .5); } catch(_){} }
   let toastT = null;
-  function toast(kind, text){ const t = $("toast"); t.className = "toast "+kind; t.textContent = text; t.hidden = false; clearTimeout(toastT); toastT = setTimeout(() => t.hidden = true, 9000); }
+  // ---------- Discord: every in-app notification is also posted to the user's webhook ----------
+  // Sent as multipart form data with no-cors, so the browser needs no permission from Discord; the reply cannot be read,
+  // which is why "Hantar ujian" asks the user to look in Discord.
+  let dcUrl = store.get("ha.dc") || "", dcQ = [], dcBusy = false;
+  const DC_RE = /^https:\/\/(?:\w+\.)?discord(?:app)?\.com\/api\/webhooks\/\d+\/[\w-]+$/;
+  function dcSend(kind, text, title){
+    if (!dcUrl) return;
+    dcQ.push({username:"Emas Absorption (app)", embeds:[{title: title || (kind === "bear" ? "🔴 Emas · notifikasi" : "🟢 Emas · notifikasi"), description:text,
+      color: kind === "bear" ? 0xE5484D : kind === "bull" ? 0x2FBF71 : 0x5B8CFF, url: location.href.split("#")[0],
+      footer:{text:"Dari app (semasa terbuka) · harga "+(OFF ? "ikut offset broker" : "Hyperliquid")}, timestamp:new Date().toISOString()}]});
+    dcPump();
+  }
+  async function dcPump(){
+    if (dcBusy) return; dcBusy = true;
+    while (dcQ.length){ const p = dcQ.shift(), fd = new FormData(); fd.append("payload_json", JSON.stringify(p));
+      try { await fetch(dcUrl, {method:"POST", mode:"no-cors", body:fd}); } catch(_){}
+      await new Promise(r => setTimeout(r, 1500)); }                  // stay well under Discord's rate limit
+    dcBusy = false;
+  }
+  function dcUi(){ $("dc-btn").setAttribute("aria-pressed", dcUrl ? "true" : "false"); if (dcUrl) $("dc-url").value = dcUrl; }
+  function dcNote(cls, t){ const n = $("dc-note"); n.className = "dc-note "+cls; n.textContent = t; }
+  $("dc-btn").addEventListener("click", () => { const b = $("dc-box"); b.hidden = !b.hidden; $("dc-btn").setAttribute("aria-expanded", b.hidden ? "false" : "true"); });
+  $("dc-save").addEventListener("click", () => { const v = $("dc-url").value.trim();
+    if (!DC_RE.test(v)){ dcNote("bad", "Link tak sah. Ia mesti bermula dengan https://discord.com/api/webhooks/ (salin dari Edit Channel → Integrations → Webhooks → Copy Webhook URL)."); return; }
+    dcUrl = v; store.set("ha.dc", v); dcUi(); dcNote("ok", "Disimpan. Notifikasi app kini dihantar ke Discord semasa app terbuka. Tekan \"Hantar ujian\" untuk semak."); });
+  $("dc-test").addEventListener("click", () => { if (!dcUrl){ dcNote("bad", "Simpan link webhook dahulu."); return; }
+    const last = candles.length ? candles[candles.length-1].close : null;
+    dcSend("", "Sambungan app → Discord berjaya. Harga emas sekarang: **"+(last != null ? fp(last) : "—")+"**", "✅ Ujian dari app");
+    dcNote("ok", "Mesej ujian dihantar. Semak channel Discord awak; kalau tiada dalam 10 saat, salin semula link webhook."); });
+  $("dc-off").addEventListener("click", () => { dcUrl = ""; try { localStorage.removeItem("ha.dc"); } catch(_){} $("dc-url").value = ""; dcUi(); dcNote("", "Link dipadam. Notifikasi tidak lagi dihantar ke Discord."); });
+  dcUi();
+  function toast(kind, text){ dcSend(kind, text); const t = $("toast"); t.className = "toast "+kind; t.textContent = text; t.hidden = false; clearTimeout(toastT); toastT = setTimeout(() => t.hidden = true, 9000); }
   function checkNew(){
     ["1m","5m"].forEach(k => { const {evs} = detect(bars(k), sens);
       evs.filter(e => e.status !== "tunggu").forEach(e => { const id = k+"|"+e.key; if (seen.has(id)) return; seen.add(id);
