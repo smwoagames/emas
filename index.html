@@ -267,9 +267,9 @@ details p{margin:6px 0;max-width:70ch}
   // snaps: order-book snapshots (one per minute) kept since the page opened, and across reloads in this browser
   let snaps = [];
   const SNAP_KEEP = 3*3600000;
-  try { const raw = store.get("ha.snaps"); if (raw){ const a = JSON.parse(raw); if (Array.isArray(a)) snaps = a.filter(s => Date.now() - s.t < SNAP_KEEP).map(s => ({t:s.t, mid:s.m, bids:s.b.map(([px,size,w,age]) => ({px,size,wallets:w,oldest_age_s:age})), asks:s.a.map(([px,size,w,age]) => ({px,size,wallets:w,oldest_age_s:age}))})); } } catch(_){ snaps = []; }
+  try { const raw = store.get("ha.snaps"); if (raw){ const a = JSON.parse(raw); if (Array.isArray(a)) snaps = a.filter(s => Date.now() - s.t < SNAP_KEEP).map(s => ({t:s.t, mid:s.m, bids:s.b.map(([px,size,w,age,wd]) => ({px,size,wallets:w,oldest_age_s:age,wide:!!wd})), asks:s.a.map(([px,size,w,age,wd]) => ({px,size,wallets:w,oldest_age_s:age,wide:!!wd}))})); } } catch(_){ snaps = []; }
   function saveSnaps(){
-    try { store.set("ha.snaps", JSON.stringify(snaps.map(s => { const near = l => Math.abs(l.px - s.mid) <= 20; const c = l => [l.px, +l.size.toFixed(4), l.wallets, Math.round(l.oldest_age_s)];
+    try { store.set("ha.snaps", JSON.stringify(snaps.map(s => { const near = l => Math.abs(l.px - s.mid) <= 20; const c = l => [l.px, +l.size.toFixed(4), l.wallets, Math.round(l.oldest_age_s), l.wide ? 1 : 0];
       return {t:s.t, m:s.mid, b:s.bids.filter(near).map(c), a:s.asks.filter(near).map(c)}; }))); } catch(_){}
   }
   function addSnap(t, b){
@@ -281,8 +281,10 @@ details p{margin:6px 0;max-width:70ch}
   const PAD = 0.15;
   function liqIn(snap, ev){
     const side = ev.up ? snap.asks : snap.bids;           // passive sellers above / passive buyers below
-    const lv = side.filter(l => l.px >= ev.zLo - PAD && l.px <= ev.zHi + PAD);
-    return {t:snap.t, usd: lv.reduce((s,l)=>s+l.px*l.size,0), wallets: lv.reduce((s,l)=>s+(l.wallets||0),0), age: Math.max(0, ...lv.map(l=>l.oldest_age_s||0))};
+    // a wide level is a $1 bucket: only the part of it that overlaps the zone counts
+    const lo = ev.zLo - PAD, hi = ev.zHi + PAD, part = l => !l.wide ? (l.px >= lo && l.px <= hi ? 1 : 0) : Math.max(0, Math.min(1, Math.min(hi, l.px + 0.5) - Math.max(lo, l.px - 0.5)));
+    const lv = side.filter(l => part(l) > 0);
+    return {t:snap.t, usd: lv.reduce((s,l)=>s+l.px*l.size*part(l),0), wallets: lv.reduce((s,l)=>s+(l.wallets||0),0), age: Math.max(0, ...lv.map(l=>l.oldest_age_s||0))};
   }
   function bookAt(ev){ return book ? liqIn(book, ev) : null; }
   const MIN_WALL = 2000;   // below this the zone has no real wall
@@ -692,8 +694,8 @@ details p{margin:6px 0;max-width:70ch}
     let bids = f.bids.slice(), asks = f.asks.slice();
     if (fine && wide){
       const minB = Math.min(...fine.bids.map(x => x.px)), maxA = Math.max(...fine.asks.map(x => x.px));
-      bids = bids.concat(wide.bids.filter(x => x.px < minB - 0.5));
-      asks = asks.concat(wide.asks.filter(x => x.px > maxA + 0.5));
+      bids = bids.concat(wide.bids.filter(x => x.px < minB - 0.5).map(x => Object.assign({}, x, {wide:true})));
+      asks = asks.concat(wide.asks.filter(x => x.px > maxA + 0.5).map(x => Object.assign({}, x, {wide:true})));
     }
     book = {t:f.t, mid:(f.bids[0].px + f.asks[0].px)/2, bids, asks, age:0};
     if (book.t - lastSnapT >= 15000){ lastSnapT = book.t; addSnap(book.t, book); }
